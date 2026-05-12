@@ -1,0 +1,59 @@
+version: "1.0.0"
+title: "Execute migration item"
+description: "Migrate one item from the plan. The matching execution sub-skill auto-activates."
+
+settings:
+  temperature: 1
+
+parameters:
+  - key: repo
+    input_type: string
+    requirement: required
+    description: "Absolute path to the source repository"
+  - key: migration_type
+    input_type: string
+    requirement: required
+    description: "Migration key, e.g. java-ee-to-quarkus, python2-to-python3"
+  - key: item_n
+    input_type: string
+    requirement: required
+    description: "1-based item number in the migration plan"
+  - key: item_path
+    input_type: string
+    requirement: required
+    description: "File or marker path for this item"
+  - key: item_action
+    input_type: string
+    requirement: required
+    description: "Action for this item: migrate, create, or delete"
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 1200
+    bundled: true
+
+instructions: |
+  Execute exactly ONE item. The goose-migration skill's execution sub-skill
+  for {{ migration_type }} auto-loads from the description matcher.
+  Apply its per-file loop. Stay inside {{ repo }}. Do NOT compile or test —
+  the verify step handles that. Emit only the JSON response.
+
+prompt: |
+  Item #{{ item_n }} — {{ item_action }} — {{ item_path }}
+  Repo: {{ repo }}  |  Migration: {{ migration_type }}
+
+  Read {{ repo }}/.goosehints for project context, apply transformations to
+  this single item, update the checklist, and return the JSON.
+
+response:
+  json_schema:
+    type: object
+    required: [n, path, status]
+    properties:
+      n:             { type: integer }
+      path:          { type: string }
+      status:        { type: string, enum: [ok, failed, skipped] }
+      summary:       { type: string }
+      files_touched: { type: array, items: { type: string } }
+      lesson:        { type: string }

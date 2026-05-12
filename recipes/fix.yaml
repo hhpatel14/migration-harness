@@ -1,0 +1,53 @@
+version: "1.0.0"
+title: "Fix migration error"
+description: "Address a single compile or test error. Conservative — minimal edits."
+
+settings:
+  temperature: 1
+
+parameters:
+  - key: repo
+    input_type: string
+    requirement: required
+    description: "Absolute path to the repository"
+  - key: migration_type
+    input_type: string
+    requirement: required
+    description: "Migration key, e.g. java-ee-to-quarkus"
+  - key: error_file
+    input_type: string
+    requirement: required
+    description: "Path of the file reported in the verify error"
+  - key: error_message
+    input_type: string
+    requirement: required
+    description: "The error message text from verify"
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 900
+    bundled: true
+
+instructions: |
+  Fix exactly ONE error. The goose-migration skill auto-loads — use its
+  "Compile Error Handling" rules. Make the minimal edit needed. Touch only
+  the file in error_file (or its direct dependency manifest if the error is
+  a missing dependency). Do NOT re-run compile or tests.
+
+prompt: |
+  Repo: {{ repo }}  |  Migration: {{ migration_type }}
+  Error in: {{ error_file }}
+  Message:  {{ error_message }}
+
+  Apply the smallest possible fix. Return JSON.
+
+response:
+  json_schema:
+    type: object
+    required: [fixed, summary]
+    properties:
+      fixed:         { type: boolean }
+      file_changed:  { type: string }
+      summary:       { type: string }
+      pom_changed:   { type: boolean, description: "True if build manifest was modified (means a re-resolve is needed)" }

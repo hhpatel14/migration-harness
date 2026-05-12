@@ -1,0 +1,52 @@
+version: "1.0.0"
+title: "Verify migration"
+description: "Compile and test the migrated repo. Reports errors but does NOT fix them."
+
+settings:
+  temperature: 1
+
+parameters:
+  - key: repo
+    input_type: string
+    requirement: required
+    description: "Absolute path to the (now-migrated) repository"
+  - key: migration_type
+    input_type: string
+    requirement: required
+    description: "Migration key, e.g. java-ee-to-quarkus, python2-to-python3"
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 1800
+    bundled: true
+
+instructions: |
+  Verification only. Do NOT modify source code. The goose-migration skill
+  auto-activates; use its compile/test command behavior. Report errors per
+  the JSON schema. Cap error details to the first 10 errors.
+
+prompt: |
+  Repo: {{ repo }}  |  Migration: {{ migration_type }}
+
+  Run build + tests. Capture totals and first errors. Return JSON.
+
+response:
+  json_schema:
+    type: object
+    required: [build_ok, summary]
+    properties:
+      build_ok:     { type: boolean }
+      tests_total:  { type: integer }
+      tests_passed: { type: integer }
+      tests_failed: { type: integer }
+      errors:
+        type: array
+        description: "First 10 errors, each with file and message"
+        items:
+          type: object
+          properties:
+            file:    { type: string }
+            line:    { type: integer }
+            message: { type: string }
+      summary: { type: string }

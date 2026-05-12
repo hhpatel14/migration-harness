@@ -1,0 +1,15 @@
+# Runtime data — never commit
+*.jsonl
+*.json
+!package.json
+!coolstore.json
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
