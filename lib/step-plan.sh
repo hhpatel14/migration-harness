@@ -132,18 +132,20 @@ $planner_skill
   === END PLANNER SKILL ===
 
   === PRE-GATHERED CONTEXT ===
-  Everything below was already collected — do NOT re-read these files or
-  re-run discovery commands. This includes: detect.json, file tree,
-  build manifests, config files, and ALL migration reference docs.
+  The following has been pre-collected: detect.json, source file tree,
+  and build manifests. Do NOT re-run these discovery commands.
 $indented_context
   === END PRE-GATHERED CONTEXT ===
 
-  EFFICIENCY RULES:
-  - All discovery data and references are above. Do NOT re-read them.
-  - Use developer tools ONLY to read source files you need for complex
-    steps (MDBs, JNDI lookups, architecture changes). Do NOT read files
-    that only need mechanical import swaps.
-  - Write PLAN.md to $repo/PLAN.md when done.
+  YOUR JOB:
+  1. Read the pre-gathered context above (detect.json, file tree, manifests).
+  2. Based on the migration request, pick and read the relevant reference
+     file(s) from the AVAILABLE REFERENCES list above.
+  3. Read any source files you need for complex steps (MDBs, JNDI lookups,
+     architecture changes). Do NOT read files that only need mechanical
+     import swaps.
+  4. Read any config files in the repo that are relevant to the migration.
+  5. Write PLAN.md to $repo/PLAN.md.
 
 prompt: |
   Repo:              $repo
@@ -186,44 +188,28 @@ _pregather_context() {
     | sed "s|^$repo/||" | sort
   echo ""
 
-  # Build manifests
-  for f in pom.xml package.json pyproject.toml requirements.txt build.gradle; do
-    if [[ -f "$repo/$f" ]]; then
-      echo "=== $f ==="
-      cat "$repo/$f"
-      echo ""
-    fi
-  done
+  # Build manifests and config files — NOT pre-read.
+  # Goose reads what it needs via developer tools based on the file tree above.
 
-  # Config files
-  for f in \
-    src/main/resources/META-INF/persistence.xml \
-    src/main/resources/META-INF/beans.xml \
-    src/main/webapp/WEB-INF/web.xml \
-    src/main/webapp/WEB-INF/weblogic.xml \
-    src/main/resources/application.properties \
-    src/main/resources/application.yml \
-  ; do
-    if [[ -f "$repo/$f" ]]; then
-      echo "=== $f ==="
-      cat "$repo/$f"
-      echo ""
-    fi
-  done
-
-  # ALL migration references — goose picks what's relevant from context
+  # List available references — goose reads what it needs via developer tools
   if [[ -d "$skill_dir/references" ]]; then
-    echo "=== MIGRATION REFERENCES ==="
+    echo "=== AVAILABLE REFERENCES ==="
+    echo "Directory: $skill_dir/references/"
     for ref in "$skill_dir/references/"*.md; do
       [[ -f "$ref" ]] || continue
-      echo "--- $(basename "$ref") ---"
-      cat "$ref"
-      echo ""
+      echo "  - $(basename "$ref")"
     done
+    echo ""
+    echo "Use developer tools to read the reference(s) relevant to the migration request."
+    echo ""
   fi
 }
 
 # ── Parse PLAN.md into plan.json for downstream step_execute/step_verify ──
+# Handles multiple PLAN.md formats:
+#   Format A: "### Step 1: Title\n- File: path\n- Action: MODIFY"
+#   Format B: "1. `path`\n   - description..."
+#   Format C: "29. **DELETE:** `path`"
 _plan_md_to_json() {
   local plan_md="$1"
 
@@ -234,17 +220,14 @@ plan_md = sys.argv[1]
 with open(plan_md) as f:
     content = f.read()
 
-# Extract goal
-goal_match = re.search(r'## Goal\s*\n(.+?)(?=\n##|\Z)', content, re.DOTALL)
-goal = goal_match.group(1).strip() if goal_match else ''
-
-# Extract steps
 items = []
-step_pattern = re.compile(
+
+# ── Try Format A: "### Step N: title" with "- File:" and "- Action:" ──
+step_pattern_a = re.compile(
     r'### Step (\d+):\s*(.*?)(?:\s*✅.*)?\n(.*?)(?=### Step \d+|## Verification|## Notes|\Z)',
     re.DOTALL
 )
-for m in step_pattern.finditer(content):
+for m in step_pattern_a.finditer(content):
     n = int(m.group(1))
     title = m.group(2).strip()
     body = m.group(3)
@@ -256,13 +239,64 @@ for m in step_pattern.finditer(content):
 
     action_map = {'modify': 'migrate', 'create': 'create', 'delete': 'delete'}
     action = action_map.get(action, action)
+    risk = 'high' if '⚠️' in title or 'COMPLEX' in title.upper() else 'low'
 
-    risk = 'high' if '⚠️' in title or 'COMPLEX' in title else 'low'
+    items.append({'n': n, 'path': path, 'action': action, 'risk': risk, 'notes': title})
 
+# ── Try Format B/C: "N. `path`" or "N. **DELETE:** `path`" ──
+if not items:
+    # Match: "1. `pom.xml`" or "29. **DELETE:** `src/foo.xml`"
+    item_pattern = re.compile(
+        r'^(\d+)\.\s+'                      # number
+        r'(?:\*\*(?:DELETE|REMOVE)[:\*]*\s*)?'  # optional DELETE prefix
+        r'`([^`]+)`'                         # path in backticks
+        r'(.*?)$',                           # rest of line (← CREATE NEW, ⚠️, etc.)
+        re.MULTILINE
+    )
+    for m in item_pattern.finditer(content):
+        n = int(m.group(1))
+        path = m.group(2).strip()
+        rest = m.group(3).strip()
+        full_line = m.group(0)
+
+        # Determine action
+        if re.search(r'\bDELETE\b|\bREMOVE\b', full_line, re.I):
+            action = 'delete'
+        elif re.search(r'\bCREATE\b', full_line, re.I):
+            action = 'create'
+        else:
+            action = 'migrate'
+
+        # Risk
+        risk = 'high' if '⚠️' in full_line or 'COMPLEX' in full_line.upper() else 'low'
+
+        # Notes — grab indented lines after this item until next item
+        item_start = m.end()
+        next_item = re.search(r'^\d+\.\s+', content[item_start:], re.MULTILINE)
+        next_section = re.search(r'^##', content[item_start:], re.MULTILINE)
+        end = item_start + min(
+            next_item.start() if next_item else len(content),
+            next_section.start() if next_section else len(content)
+        )
+        body_lines = content[item_start:end].strip().split('\n')
+        notes = '; '.join(
+            line.strip().lstrip('- ') for line in body_lines[:3]
+            if line.strip().startswith('-')
+        )
+        if not notes:
+            notes = path
+
+        items.append({'n': n, 'path': path, 'action': action, 'risk': risk, 'notes': notes})
+
+# ── Assign layers from paths ──
+for item in items:
+    path = item['path']
     layer = 'unknown'
     if 'pom.xml' in path or 'package.json' in path or 'build.gradle' in path:
         layer = 'build'
-    elif 'application.properties' in path or 'persistence.xml' in path or 'web.xml' in path:
+    elif 'application.properties' in path or 'application.yml' in path:
+        layer = 'config'
+    elif 'persistence.xml' in path or 'web.xml' in path or 'beans.xml' in path:
         layer = 'config'
     elif '/model/' in path or '/domain/' in path or '/entity/' in path:
         layer = 'model'
@@ -274,25 +308,29 @@ for m in step_pattern.finditer(content):
         layer = 'util'
     elif '/persistence/' in path or '/repository/' in path:
         layer = 'persistence'
+    elif 'weblogic/' in path:
+        layer = 'cleanup'
+    item['layer'] = layer
 
-    items.append({
-        'n': n, 'path': path, 'action': action,
-        'layer': layer, 'risk': risk, 'notes': title
-    })
-
-# Detect migration type from goal
+# ── Detect migration type from full content ──
 mt = 'custom'
-if re.search(r'quarkus|java.?ee|jakarta', goal, re.I):
+if re.search(r'quarkus|java.?ee|jakarta|weblogic', content, re.I):
     mt = 'java-ee-to-quarkus'
-elif re.search(r'python.?[23]', goal, re.I):
+elif re.search(r'python.?[23]|py2|py3', content, re.I):
     mt = 'python2-to-python3'
-elif re.search(r'react|hooks', goal, re.I):
+elif re.search(r'react|hooks|class.?component', content, re.I):
     mt = 'react-class-to-hooks'
+
+# Source/target from content
+src_match = re.search(r'(?:from|source)[:\s]+(.+?)(?:\n|→|->)', content, re.I)
+tgt_match = re.search(r'(?:to|target|→|->)\s*(.+?)(?:\n|$)', content, re.I)
+source = src_match.group(1).strip() if src_match else ''
+target = tgt_match.group(1).strip() if tgt_match else ''
 
 plan = {
     'migration_type': mt,
-    'source_stack': goal,
-    'target_stack': goal,
+    'source_stack': source,
+    'target_stack': target,
     'items': items
 }
 print(json.dumps(plan))

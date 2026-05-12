@@ -10,9 +10,18 @@
 
 set -euo pipefail
 
-# Resolve install location (portable — no readlink -f needed)
-SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
-MH_INSTALL_DIR="$(dirname "$(dirname "$SELF")")"
+# Resolve install location (follows symlinks portably)
+_resolve_link() {
+  local f="$1"
+  while [[ -L "$f" ]]; do
+    local dir; dir="$(cd "$(dirname "$f")" && pwd -P)"
+    f="$(readlink "$f")"
+    [[ "$f" != /* ]] && f="$dir/$f"   # relative symlink
+  done
+  echo "$f"
+}
+SELF="$(_resolve_link "${BASH_SOURCE[0]}")"
+MH_INSTALL_DIR="$(cd "$(dirname "$SELF")/.." && pwd -P)"
 export MH_INSTALL_DIR
 
 # shellcheck source=lib/common.sh
@@ -51,26 +60,47 @@ cmd_init() {
 
   echo
   info "This will save your config to $MH_CONFIG"
-  echo
 
-  # Provider
-  echo "Select your Goose provider:"
-  select prov in "anthropic" "openai" "google" "ollama" "other"; do
-    [[ -n "$prov" ]] && break
-  done
-  MH_PROVIDER="$prov"
+  # ── Auto-detect from goose config ──
+  local goose_config="$HOME/.config/goose/config.yaml"
+  local detected_provider="" detected_model=""
+  if [[ -f "$goose_config" ]]; then
+    detected_provider=$(grep '^GOOSE_PROVIDER:' "$goose_config" 2>/dev/null | awk '{print $2}' || true)
+    detected_model=$(grep '^GOOSE_MODEL:' "$goose_config" 2>/dev/null | awk '{print $2}' || true)
+  fi
 
-  # Model — sensible defaults per provider
-  local default_model=""
-  case "$MH_PROVIDER" in
-    anthropic) default_model="claude-sonnet-4-5" ;;
-    openai)    default_model="gpt-4o" ;;
-    google)    default_model="gemini-2.0-flash" ;;
-    ollama)    default_model="llama3.1:70b" ;;
-  esac
-  read -rp "Model name [$default_model]: " MH_MODEL
-  MH_MODEL="${MH_MODEL:-$default_model}"
-  [[ -n "$MH_MODEL" ]] || fatal "Model name required"
+  if [[ -n "$detected_provider" && -n "$detected_model" ]]; then
+    echo
+    ok "Detected from goose config: provider=$detected_provider model=$detected_model"
+    read -rp "Use these settings? [Y/n]: " use_detected
+    if [[ "${use_detected:-y}" =~ ^[Yy]$ ]]; then
+      MH_PROVIDER="$detected_provider"
+      MH_MODEL="$detected_model"
+    fi
+  fi
+
+  # ── Manual entry if not auto-detected ──
+  if [[ -z "${MH_PROVIDER:-}" ]]; then
+    echo
+    echo "Select your Goose provider:"
+    select prov in "anthropic" "openai" "google" "gcp_vertex_ai" "ollama" "other"; do
+      [[ -n "$prov" ]] && break
+    done
+    MH_PROVIDER="$prov"
+  fi
+
+  if [[ -z "${MH_MODEL:-}" ]]; then
+    local default_model=""
+    case "$MH_PROVIDER" in
+      anthropic|gcp_vertex_ai) default_model="claude-sonnet-4-5" ;;
+      openai)    default_model="gpt-4o" ;;
+      google)    default_model="gemini-2.0-flash" ;;
+      ollama)    default_model="llama3.1:70b" ;;
+    esac
+    read -rp "Model name [$default_model]: " MH_MODEL
+    MH_MODEL="${MH_MODEL:-$default_model}"
+    [[ -n "$MH_MODEL" ]] || fatal "Model name required"
+  fi
 
   # Limits
   read -rp "Max turns per goose invocation [200]: " MH_MAX_TURNS

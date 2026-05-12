@@ -78,9 +78,9 @@ goose_run() {
   goose run \
     --recipe "$recipe" \
     --no-session \
+    --quiet \
     --output-format json \
     --max-turns "$max_turns" \
-    --max-tool-repetitions 5 \
     --provider "$MH_PROVIDER" \
     --model "$MH_MODEL" \
     "$@" \
@@ -109,13 +109,29 @@ goose_run() {
     return 0
   fi
 
+  # Strip any banner text before the JSON (goose sometimes prints ASCII art before {)
+  local clean_log="$log.clean"
+  sed -n '/^{/,$p' "$log" > "$clean_log" 2>/dev/null || cp "$log" "$clean_log"
+
+  # Check for API errors in the output
+  if grep -q "credit balance is too low\|rate limit\|quota exceeded" "$clean_log" 2>/dev/null; then
+    err "       API error detected — check your provider billing/quota"
+    head -5 "$clean_log" | grep -i "error\|credit\|rate\|quota" | head -1 | while read -r line; do
+      err "       $line"
+    done >&2
+    rm -f "$clean_log"
+    return 1
+  fi
+
   jq -c '
     [ .messages[]?.content[]?
       | select(.type == "toolRequest"
                and .toolCall.value.name == "recipe__final_output")
       | .toolCall.value.arguments
     ] | last // empty
-  ' "$log" 2>/dev/null || true
+  ' "$clean_log" 2>/dev/null || true
+
+  rm -f "$clean_log"
 }
 
 # ── Live progress watcher ────────────────────────────────────────
