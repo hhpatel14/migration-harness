@@ -40,7 +40,7 @@ step_plan() {
   info "  2d. running goose planner (reads complex files, writes PLAN.md)..."
   info "       this is the LLM step — may take 30-90s depending on model"
 
-  goose_run "$rendered_recipe" --max-turns 15 \
+  goose_run "$rendered_recipe" --max-turns 30 \
     > "$out" || true
 
   # ── 2e. Validate PLAN.md ──
@@ -137,15 +137,28 @@ $planner_skill
 $indented_context
   === END PRE-GATHERED CONTEXT ===
 
-  YOUR JOB:
-  1. Read the pre-gathered context above (detect.json, file tree, manifests).
-  2. Based on the migration request, pick and read the relevant reference
-     file(s) from the AVAILABLE REFERENCES list above.
-  3. Read any source files you need for complex steps (MDBs, JNDI lookups,
-     architecture changes). Do NOT read files that only need mechanical
-     import swaps.
-  4. Read any config files in the repo that are relevant to the migration.
-  5. Write PLAN.md to $repo/PLAN.md.
+  YOUR JOB (follow this order strictly):
+
+  PHASE 1 — Quick scan (max 3 reads):
+  1. Read the pre-gathered context above (detect.json, file tree) — already done.
+  2. Read the build manifest (pom.xml, package.json, .csproj, etc.) — 1 read.
+  3. Check AVAILABLE REFERENCES list. If one matches, read it — 1 read.
+
+  PHASE 2 — Write a DRAFT PLAN.md:
+  4. Based on what you know so far, write PLAN.md to $repo/PLAN.md NOW.
+     For files you haven't read, make your best guess from the file name
+     and mark uncertain steps with ⚠️.
+
+  PHASE 3 — Refine (max 5 reads):
+  5. Read ONLY the source files where your guess might be wrong — complex
+     patterns like MDBs, JNDI lookups, lifecycle listeners, etc.
+  6. Update PLAN.md with corrections based on what you read.
+     If no corrections needed, skip this phase.
+
+  RULES:
+  - Write PLAN.md BEFORE reading source files. Draft first, refine after.
+  - Max 8 file reads total across all phases.
+  - If uncertain about a file, mark it ⚠️ and move on. Do NOT read every file.
 
 prompt: |
   Repo:              $repo
@@ -181,10 +194,17 @@ _pregather_context() {
     \( -name "*.java" -o -name "*.py" -o -name "*.xml" -o -name "*.yaml" \
        -o -name "*.yml" -o -name "*.properties" -o -name "*.sql" \
        -o -name "*.json" -o -name "*.toml" -o -name "*.gradle" \
-       -o -name "*.kt" -o -name "*.groovy" -o -name "Dockerfile" \) \
+       -o -name "*.kt" -o -name "*.groovy" -o -name "Dockerfile" \
+       -o -name "*.cs" -o -name "*.csproj" -o -name "*.sln" -o -name "*.config" \
+       -o -name "*.go" -o -name "*.mod" -o -name "*.sum" \
+       -o -name "*.rb" -o -name "*.gemspec" -o -name "Gemfile" \
+       -o -name "*.rs" -o -name "Cargo.toml" -o -name "Cargo.lock" \
+       -o -name "*.swift" -o -name "*.php" -o -name "*.sh" \
+       -o -name "*.cfg" -o -name "*.ini" -o -name "Makefile" \) \
     -not -path "*/target/*" -not -path "*/node_modules/*" \
     -not -path "*/.git/*" -not -path "*/.vscode/*" \
     -not -path "*/bower_components/*" -not -path "*/.metadata/*" \
+    -not -path "*/bin/*" -not -path "*/obj/*" -not -path "*/vendor/*" \
     | sed "s|^$repo/||" | sort
   echo ""
 
@@ -292,24 +312,31 @@ if not items:
 for item in items:
     path = item['path']
     layer = 'unknown'
-    if 'pom.xml' in path or 'package.json' in path or 'build.gradle' in path:
+    p = path.lower()
+    if any(x in p for x in ['pom.xml', 'package.json', 'build.gradle', '.csproj', '.sln',
+                              'cargo.toml', 'gemfile', 'go.mod', 'requirements.txt',
+                              'pyproject.toml', 'setup.py']):
         layer = 'build'
-    elif 'application.properties' in path or 'application.yml' in path:
+    elif any(x in p for x in ['application.properties', 'application.yml', 'appsettings',
+                                'web.config', '.env', 'config.yaml', 'config.json']):
         layer = 'config'
-    elif 'persistence.xml' in path or 'web.xml' in path or 'beans.xml' in path:
+    elif any(x in p for x in ['persistence.xml', 'web.xml', 'beans.xml',
+                                'global.asax', 'startup.cs', 'program.cs']):
         layer = 'config'
-    elif '/model/' in path or '/domain/' in path or '/entity/' in path:
+    elif any(x in p for x in ['/model/', '/models/', '/domain/', '/entity/', '/entities/']):
         layer = 'model'
-    elif '/service/' in path:
+    elif any(x in p for x in ['/service/', '/services/']):
         layer = 'service'
-    elif '/rest/' in path or '/controller/' in path or '/api/' in path:
+    elif any(x in p for x in ['/rest/', '/controller/', '/controllers/', '/api/',
+                                '/endpoint/', '/endpoints/', '/handler/', '/handlers/']):
         layer = 'api'
-    elif '/utils/' in path or '/util/' in path or '/helper/' in path:
+    elif any(x in p for x in ['/utils/', '/util/', '/helper/', '/helpers/', '/common/']):
         layer = 'util'
-    elif '/persistence/' in path or '/repository/' in path:
+    elif any(x in p for x in ['/persistence/', '/repository/', '/repositories/', '/dao/',
+                                '/data/']):
         layer = 'persistence'
-    elif 'weblogic/' in path:
-        layer = 'cleanup'
+    elif any(x in p for x in ['weblogic/', '/views/', '/pages/']):
+        layer = 'cleanup' if 'weblogic' in p else 'view'
     item['layer'] = layer
 
 # ── Detect migration type from full content ──
@@ -320,6 +347,10 @@ elif re.search(r'python.?[23]|py2|py3', content, re.I):
     mt = 'python2-to-python3'
 elif re.search(r'react|hooks|class.?component', content, re.I):
     mt = 'react-class-to-hooks'
+elif re.search(r'\.net|asp\.net|csharp|c#|\.NET\s*(Core|Framework)', content, re.I):
+    mt = 'dotnet-upgrade'
+elif re.search(r'spring.?boot|spring.?framework', content, re.I):
+    mt = 'spring-boot-upgrade'
 
 # Source/target from content
 src_match = re.search(r'(?:from|source)[:\s]+(.+?)(?:\n|→|->)', content, re.I)

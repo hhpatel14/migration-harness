@@ -20,12 +20,16 @@ step_detect() {
 
   # ── 1b. Count source files by language ──
   info "  1b. counting source files..."
-  local java_files py_files js_files ts_files
+  local java_files py_files js_files ts_files cs_files go_files rb_files rs_files
   java_files=$(find "$repo" -name "*.java" -not -path "*/target/*" 2>/dev/null | wc -l | tr -d ' ')
   py_files=$(find "$repo" -name "*.py" -not -path "*/.venv/*" -not -path "*/venv/*" 2>/dev/null | wc -l | tr -d ' ')
   js_files=$(find "$repo" \( -name "*.js" -o -name "*.jsx" \) -not -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
   ts_files=$(find "$repo" \( -name "*.ts" -o -name "*.tsx" \) -not -path "*/node_modules/*" 2>/dev/null | wc -l | tr -d ' ')
-  ok "  1b. files: java=$java_files python=$py_files js=$js_files ts=$ts_files"
+  cs_files=$(find "$repo" -name "*.cs" -not -path "*/bin/*" -not -path "*/obj/*" 2>/dev/null | wc -l | tr -d ' ')
+  go_files=$(find "$repo" -name "*.go" -not -path "*/vendor/*" 2>/dev/null | wc -l | tr -d ' ')
+  rb_files=$(find "$repo" -name "*.rb" 2>/dev/null | wc -l | tr -d ' ')
+  rs_files=$(find "$repo" -name "*.rs" -not -path "*/target/*" 2>/dev/null | wc -l | tr -d ' ')
+  ok "  1b. files: java=$java_files python=$py_files js=$js_files ts=$ts_files cs=$cs_files go=$go_files ruby=$rb_files rust=$rs_files"
 
   # ── 1c. Detect migration-relevant patterns ──
   info "  1c. scanning for migration patterns (javax, EJB, MDB, py2, react)..."
@@ -60,7 +64,9 @@ step_detect() {
                               '{pom_xml:$pom, package_json:$pkg, pyproject_toml:$pyproj, requirements_txt:$reqtxt, setup_py:$setup}')" \
     --argjson files "$(jq -n --argjson j "$java_files" --argjson p "$py_files" \
                              --argjson js "$js_files" --argjson ts "$ts_files" \
-                             '{java:$j, python:$p, javascript:$js, typescript:$ts}')" \
+                             --argjson cs "$cs_files" --argjson go "$go_files" \
+                             --argjson rb "$rb_files" --argjson rs "$rs_files" \
+                             '{java:$j, python:$p, javascript:$js, typescript:$ts, csharp:$cs, go:$go, ruby:$rb, rust:$rs}')" \
     --argjson patterns "$(jq -n \
                              --argjson jx "$javax_count" --argjson ejb "$ejb_count" \
                              --argjson mdb "$mdb_count" --argjson wl "$weblogic_count" \
