@@ -292,6 +292,43 @@ _pregather_context() {
     | sed "s|^$repo/||" | sort
   echo ""
 
+  # Code graph — the key to zero file reads during planning
+  if [[ -f "$RUN_DIR/code-graph.json" ]]; then
+    echo "=== CODE GRAPH SUMMARY ==="
+    jq '.summary' "$RUN_DIR/code-graph.json"
+    echo ""
+
+    echo "=== COMPLEX FILES (need structural changes) ==="
+    jq -r '.summary.complex_files[] | "\(.path) [\(.patterns | join(", "))] (\(.lines) lines)"' "$RUN_DIR/code-graph.json"
+    echo ""
+
+    echo "=== FILE DETAILS (imports, annotations, classes, methods, injections, dependencies) ==="
+    # Include full details for complex files, summary for others
+    jq -r '
+      .files[] |
+      if (.patterns // [] | length) > 0 then
+        "--- \(.path) [COMPLEX: \(.patterns | join(", "))] ---",
+        "  package: \(.package // .namespace // "")",
+        "  imports: \(.import_groups // {} | to_entries | map("\(.key): \(.value | join(", "))") | join("; "))",
+        "  annotations: \(.annotations // [] | join(", "))",
+        "  classes: \(.classes // [] | map("\(.name)\(if .extends then " extends \(.extends)" else "" end)\(if .implements then " implements \(.implements | join(", "))" else "" end)") | join("; "))",
+        "  methods: \(.methods // [] | map("\(.name)(\(.params // ""))") | join(", "))",
+        "  injections: \(.injections // [] | map("\(.type) \(.name)") | join(", "))",
+        "  depends_on: \(.depends_on // [] | join(", "))",
+        ""
+      else
+        "--- \(.path) ---",
+        "  \(.lines) lines | annotations: \(.annotations // [] | join(", ")) | depends_on: \(.depends_on // [] | join(", "))",
+        ""
+      end
+    ' "$RUN_DIR/code-graph.json"
+    echo ""
+
+    echo "=== DEPENDENCY GRAPH (who depends on whom) ==="
+    jq -r '.files[] | select((.depends_on // []) | length > 0) | "\(.path) → \(.depends_on | join(", "))"' "$RUN_DIR/code-graph.json"
+    echo ""
+  fi
+
   # Build manifests and config files — NOT pre-read.
   # Goose reads what it needs via developer tools based on the file tree above.
 

@@ -54,8 +54,18 @@ step_detect() {
   fi
   ok "  1c. patterns: javax=$javax_count ejb=$ejb_count mdb=$mdb_count weblogic=$weblogic_count py2_print=$py2_print py2_xrange=$py2_xrange react_class=$react_class"
 
-  # ── 1d. Write detect.json ──
-  info "  1d. writing detect.json..."
+  # ── 1d. Build code graph ──
+  info "  1d. building code graph (imports, annotations, classes, dependencies)..."
+  local graph_file="$RUN_DIR/code-graph.json"
+  python3 "$MH_INSTALL_DIR/lib/graphify.py" "$repo" > "$graph_file"
+  local graph_files graph_patterns graph_complex
+  graph_files=$(jq '.summary.total_files' "$graph_file")
+  graph_patterns=$(jq '.summary.all_patterns | length' "$graph_file")
+  graph_complex=$(jq '.summary.complex_files | length' "$graph_file")
+  ok "  1d. code graph: $graph_files files, $graph_patterns patterns, $graph_complex complex files"
+
+  # ── 1e. Write detect.json ──
+  info "  1e. writing detect.json..."
   jq -n \
     --arg repo "$repo" \
     --argjson manifests "$(jq -n --argjson pom "$has_pom" --argjson pkg "$has_pkg" \
