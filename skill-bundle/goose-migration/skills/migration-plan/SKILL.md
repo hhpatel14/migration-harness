@@ -1,177 +1,167 @@
 ---
 name: migration-plan
 description: >
-  Sub-skill of goose-migration. Handles Stage 1: project discovery, migration plan
-  generation, human approval gate, and .goosehints file creation. Always runs before
-  any execution skill. Triggers when: umbrella skill routes here, user says "build
-  migration plan", "show me the plan", "discover the project", "generate goosehints".
-  Never starts migrating files — that is the execution skill's job.
+  Sub-skill of migration-harness. Reads a project and a goal statement, then produces
+  PLAN.md in the repo root. The plan is specific to THIS project — real file paths,
+  real dependencies, real layer ordering. Does NOT execute any changes.
+  Output is always PLAN.md and nothing else.
 ---
 
-# Migration Plan Sub-Skill
+# Planner Sub-Skill
 
-Discovers the project, builds an ordered migration plan, gets approval, and generates
-`.goosehints`. Does NOT migrate any files — hands off to the execution skill.
+Reads the project, understands the goal, writes `PLAN.md`.
+Does NOT modify any source files — planning only.
 
 ---
 
-## Phase 1 — Discovery
+## Phase 1 — Understand the Goal
 
-Run these shell commands to gather facts. Use `shell` tool, one command at a time.
-Do NOT read file contents yet — only structure and metadata.
+Parse the goal statement to extract:
+
+- **What** needs to change (e.g. javax → jakarta, Python 2 → 3, .NET Framework → .NET 8)
+- **Scope** — all files? specific layers? specific patterns?
+- **Target state** — what does "done" look like?
+- **Constraints** — anything to preserve, avoid, or be careful about?
+
+---
+
+## Phase 2 — Discover the Project
+
+**If detect.json and file tree are provided in your context, skip this phase.**
+Those are already collected — do NOT re-run discovery commands.
+
+If NOT provided, run discovery commands. Read structure and metadata ONLY — no
+file contents yet. Adapt commands to the detected project type.
 
 ```bash
-# 1. All source files, sorted
-find src -name "*.java" -o -name "*.py" -o -name "*.jsx" -o -name "*.tsx" | sort
+# Project type detection
+ls -la
+cat pom.xml | grep -E "<packaging>|<parent>|<artifactId>" | head -10
+cat package.json 2>/dev/null | head -20
+cat *.csproj 2>/dev/null | head -20
+cat requirements.txt 2>/dev/null | head -20
 
-# 2. Total line count
-find src -name "*.java" -exec wc -l {} + | tail -1   # Java
-# or: find . -name "*.py" | xargs wc -l | tail -1    # Python
+# Source file inventory
+find . -type f -name "*.java" -o -name "*.cs" -o -name "*.py" | grep -v test | sort
+find . -type f | grep test | sort
 
-# 3. Build file (metadata only — grep, not cat)
-cat pom.xml | grep -E "<artifactId>|<packaging>|<groupId>" | head -30   # Java
-# or: cat package.json | python3 -m json.tool | grep -E "name|version|dependencies" | head -20
-
-# 4. Config/resource files
-find src/main/resources -type f 2>/dev/null
-find src/main/webapp/WEB-INF -type f 2>/dev/null
-
-# 5. Detect what needs changing (counts only — no file reads)
-grep -rl "javax\." src 2>/dev/null | wc -l       # javax import count
-grep -rl "@Stateless\|@Stateful\|@EJB" src 2>/dev/null | wc -l   # EJB count
-grep -rl "@MessageDriven" src 2>/dev/null | wc -l  # MDB count
-find src -path "*/weblogic/*" 2>/dev/null | wc -l  # server stubs
-```
-
-Summarize findings:
-- Total files and lines
-- Base package name
-- What patterns are present (EJBs, MDBs, JNDI, server stubs, etc.)
-
----
-
-## Phase 2 — Build Ordered File List
-
-Group discovered files into layers. Order within each layer: alphabetical.
-
-```
-Layer 1 — Build config
-  pom.xml  /  package.json  /  requirements.txt / setup.py
-
-Layer 2 — App config
-  src/main/resources/application.properties  (CREATE NEW if missing)
-  Delete list: persistence.xml, beans.xml, web.xml, weblogic/ stubs
-
-Layer 3 — Utils / Helpers
-  Any file in: utils/, common/, helper/, config/
-
-Layer 4 — Persistence / Repository
-  Any file in: persistence/, repository/, dao/
-
-Layer 5 — Models / Entities / Domain
-  Any file in: model/, domain/, entity/
-
-Layer 6 — Services (non-MDB first, MDB last)
-  Any file in: service/, services/
-  — Files WITHOUT @MessageDriven first
-  — Files WITH @MessageDriven / MDB in name last (hardest transform)
-
-Layer 7 — REST / Controllers / API
-  Application/config class first (e.g. RestApplication, AppConfig)
-  Then all endpoint/controller/resource files alphabetically
-
-Layer 8 — Cleanup (deletions)
-  List all files to DELETE with reason
+# Pattern scan (grep counts, not content)
+grep -rl "javax\."     src 2>/dev/null | wc -l
+grep -rl "@Stateless"  src 2>/dev/null | wc -l
+grep -rl "@MessageDriven" src 2>/dev/null | wc -l
 ```
 
 ---
 
-## Phase 3 — Present Plan for Approval
+## Phase 3 — Identify What Needs Changing
 
-Show the user the complete numbered list. Format:
+Scan for patterns relevant to the goal. Still no full file reads — grep only.
 
-```
-Migration Plan: <source> → <target>
-Project: <name> | Files: <N> | Lines: ~<X>
-
- 1. pom.xml
- 2. src/main/resources/application.properties  ← CREATE NEW
- 3. src/main/java/com/example/utils/Producers.java
- 4. src/main/java/com/example/model/Order.java
- ...
-27. DELETE: src/main/resources/META-INF/persistence.xml
-28. DELETE: src/main/webapp/WEB-INF/beans.xml
-
-Approve this plan? (yes / edit / cancel)
-```
-
-**WAIT for user response before proceeding.**
-
-- `yes` → proceed to Phase 4
-- `edit` → ask what to change, regenerate list, show again
-- `cancel` → stop
+Build a mental model:
+- Which files are affected?
+- What is the dependency order? (which files depend on which?)
+- What are the hardest changes? (flag them)
+- What can be done mechanically vs needs reasoning?
 
 ---
 
-## Phase 4 — Generate .goosehints
+## Phase 4 — Read Selectively (max 5 files)
 
-Write `.goosehints` to the project root. Structure:
+For files that need complex changes (e.g. MDB conversion, JNDI removal,
+lifecycle listener replacement, DI container changes), read them NOW.
 
-```
-# AUTO-GENERATED by goose-migration skill
-# Project: <name> | Migration: <source> → <target>
-# <timestamp>
+**Rules:**
+- Read ONE file at a time
+- Read ONLY files you need to understand to write accurate plan instructions
+- Do NOT read files that only need mechanical import changes
+- Maximum 5 file reads — if uncertain, mark the step ⚠️ and move on
 
-## CRITICAL TOKEN RULES
-[copy token rules from umbrella SKILL.md verbatim]
+---
 
-## Project Context
-- App: <name>
-- Migration: <source> → <target>
-- Files: <N> Java files (~<X> LOC)
-- Base package: <com.example.app>
+## Phase 5 — Write PLAN.md
 
-## Migration Order
-1. <exact file path>
-2. <exact file path>
+Write `PLAN.md` to the project root. Use this exact structure:
+
+```markdown
+# PLAN.md
+
+## Goal
+<restate the goal in one sentence>
+
+## Project Summary
+- Type: <Maven/Node/Python/.NET/etc>
+- Files affected: <N>
+- Estimated complexity: <Low/Medium/High>
+- Hardest steps: <list the 1-3 most complex items>
+
+## Steps
+
+### Step 1: <title>
+- File: <exact path from repo root>
+- Action: <CREATE | MODIFY | DELETE>
+- What to do: <specific instructions for this file>
+- Why: <reason — what pattern is being changed>
+- Depends on: <step numbers this must come after, or "none">
+- Verify: <how to know this step is done correctly>
+
+### Step 2: <title>
 ...
 
-## Transformation Rules
-[loaded from references/<migration-type>.md — include verbatim]
+## Verification
+<exact command(s) to run after all steps are done>
 
-## Files Already Migrated
-(update this list as migration progresses)
-- [ ] item 1
-- [ ] item 2
-...
+## Notes
+<gotchas, special cases, decisions made>
 ```
 
-To get transformation rules: read `../references/<migration-type>.md`
-- Java EE → Quarkus:   read `../references/javaee-quarkus.md`
-- Python 2 → 3:        read `../references/migration-phases.md` (Python section)
-- React class → hooks: read `../references/migration-phases.md` (React section)
+### Rules for writing steps:
 
-Read the reference file ONCE here, inline it into .goosehints, then never read it again.
+1. **One file per step** — never combine two files in one step
+2. **Exact paths** — use real paths from discovery, not placeholders
+3. **Dependency order** — steps that others depend on come first
+4. **Layer order** — build config → app config → utils → persistence → models → services → REST/controllers → tests → cleanup/deletions
+5. **Hard steps flagged** — add `⚠️ COMPLEX:` prefix to title for MDB, JNDI, architecture changes, lifecycle listeners
+6. **DELETE steps last** — after all modifications are done
+7. **Test files last** — after source files they test are migrated
+
+### Step detail levels:
+
+**Mechanical** (simple import swaps):
+```markdown
+### Step 5: Migrate Order.java imports
+- File: src/main/java/com/example/model/Order.java
+- Action: MODIFY
+- What to do: Replace all `javax.persistence.*` → `jakarta.persistence.*`
+- Why: Quarkus 3 uses Jakarta EE namespace
+- Depends on: Step 1
+- Verify: No `javax.` imports remain in file
+```
+
+**Complex** (structural changes — describe before/after pattern):
+```markdown
+### Step 14: ⚠️ COMPLEX — Convert OrderServiceMDB to Reactive
+- File: src/main/java/com/example/service/OrderServiceMDB.java
+- Action: MODIFY
+- What to do:
+    - Remove @MessageDriven, ActivationConfigProperty, implements MessageListener
+    - Add @ApplicationScoped
+    - Replace onMessage(Message msg) with @Incoming("orders") onMessage(String body)
+    - Remove javax.jms.* imports, add org.eclipse.microprofile.reactive.messaging.*
+    - Also update application.properties: add mp.messaging.incoming.orders.connector=smallrye-amqp
+- Why: JMS/MDB not supported in Quarkus — replaced by SmallRye Reactive Messaging
+- Depends on: Step 1 (pom needs smallrye-amqp extension), Step 2 (application.properties)
+- Verify: No javax.jms imports, @Incoming annotation present, channel name matches config
+```
 
 ---
 
-## Phase 5 — Hand Off to Execution Skill
+## Phase 6 — Handoff
 
-Tell the user:
+After writing PLAN.md, report:
 
 ```
-✅ Plan approved. .goosehints written to <project-root>/.goosehints
-
-Now start your Goose session:
-  cd <project-dir>
-  goose session
-
-Paste this opening prompt:
-  Read .goosehints only. Do NOT read any source files yet.
-  Confirm the migration order then migrate item #1 only. Stop after.
-
-The execution skill (javaee-quarkus / python2-to-python3 / etc.) will
-take over from here. Type "next" after each file to continue.
+✅ PLAN.md written
+   Steps: <N>  |  Complex: <X>  |  Files affected: <Y>
 ```
 
-**Do not start migrating files yourself.** The execution skill handles that.
+Do not proceed further. The harness handles the approval gate.
