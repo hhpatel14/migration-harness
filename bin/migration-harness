@@ -26,6 +26,7 @@ export MH_INSTALL_DIR
 
 # shellcheck source=lib/common.sh
 source "$MH_INSTALL_DIR/lib/common.sh"
+source "$MH_INSTALL_DIR/lib/metrics.sh"
 source "$MH_INSTALL_DIR/lib/step-detect.sh"
 source "$MH_INSTALL_DIR/lib/step-plan.sh"
 source "$MH_INSTALL_DIR/lib/step-execute.sh"
@@ -143,27 +144,68 @@ cmd_run() {
     > "$RUN_DIR/invocation.json"
 
   header "Step 1/5 — Detect"
-  step_detect "$repo"
+  track_step_start "detect"
+  if step_detect "$repo"; then
+    track_step_end "detect" "success"
+  else
+    track_step_end "detect" "failed"
+    fatal "Detect step failed"
+  fi
 
   header "Step 2/5 — Plan (human approval gate)"
-  step_plan "$repo" "$request"
+  track_step_start "plan"
+  if step_plan "$repo" "$request"; then
+    track_step_end "plan" "success"
+  else
+    track_step_end "plan" "failed"
+    fatal "Plan step failed or rejected"
+  fi
 
   header "Step 3/5 — Execute"
-  step_execute "$repo"
+  track_step_start "execute"
+  if step_execute "$repo"; then
+    track_step_end "execute" "success"
+  else
+    track_step_end "execute" "failed"
+    warn "Execute step had failures"
+  fi
 
   header "Step 4/5 — Verify"
+  track_step_start "verify"
   local verify_status=0
-  step_verify "$repo" "$RUN_DIR/verify.json" || verify_status=$?
+  if step_verify "$repo" "$RUN_DIR/verify.json"; then
+    track_step_end "verify" "success"
+  else
+    verify_status=$?
+    track_step_end "verify" "failed"
+  fi
 
   header "Step 5/5 — Fix-loop (conditional)"
+  track_step_start "fix_loop"
   if step_fix_loop "$repo"; then
+    track_step_end "fix_loop" "success"
     ok "Migration complete. Build clean."
   else
+    track_step_end "fix_loop" "failed"
     warn "Migration finished with errors. Inspect $RUN_DIR/ for details."
   fi
 
   echo
-  info "Artifacts in $RUN_DIR/"
+  info "Generating metrics..."
+  local metrics_file
+  metrics_file=$(generate_metrics "$repo" "$request")
+  ok "Metrics: $metrics_file"
+
+  echo
+  info "Copying artifacts to repo for evaluation..."
+  cp "$metrics_file" "$repo/metrics.json" 2>/dev/null || warn "Could not copy metrics.json to repo"
+  cp "$RUN_DIR/detect.json" "$repo/detect.json" 2>/dev/null || true
+  cp "$RUN_DIR/graph.json" "$repo/graph.json" 2>/dev/null || true
+  ok "Artifacts copied to $repo/"
+
+  echo
+  info "Run artifacts in $RUN_DIR/"
+  info "Repo artifacts in $repo/ (metrics.json, PLAN.md, execution-log.md, etc.)"
 }
 
 cmd_status() {
