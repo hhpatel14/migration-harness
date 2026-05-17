@@ -56,6 +56,21 @@ step_plan() {
     fatal "plan failed — PLAN.md not written; see $RUN_DIR/logs/"
   fi
 
+  # ── 2e2. Extract which reference was used ──
+  if [[ -f "$out" ]]; then
+    local ref_used
+    ref_used=$(jq -r '.reference_used // "unknown"' "$out" 2>/dev/null || echo "unknown")
+
+    if [[ "$ref_used" != "unknown" && "$ref_used" != "none" && "$ref_used" != "null" ]]; then
+      # Compute the full path from the reference name
+      local ref_path="$skill_dir/references/${ref_used}"
+      ok "  2e2. reference used: ${ref_used}"
+      [[ -f "$ref_path" ]] && info "       path: ${ref_path}"
+    else
+      ok "  2e2. no specific reference used (general migration)"
+    fi
+  fi
+
   # ── 2f. Parse PLAN.md → plan.json ──
   info "  2f. parsing PLAN.md → plan.json for downstream steps..."
   _plan_md_to_json "$plan_md" > "$RUN_DIR/plan.json"
@@ -145,6 +160,7 @@ $indented_context
   1. Read the pre-gathered context above (detect.json, file tree) — already done.
   2. Read the build manifest (pom.xml, package.json, .csproj, etc.) — 1 read.
   3. Check AVAILABLE REFERENCES list. If one matches, read it — 1 read.
+     You MUST report which reference file you read in your final response.
 
   PHASE 2 — Write a DRAFT PLAN.md:
   4. Based on what you know so far, write PLAN.md to $repo/PLAN.md NOW.
@@ -161,6 +177,7 @@ $indented_context
   - Write PLAN.md BEFORE reading source files. Draft first, refine after.
   - Max 8 file reads total across all phases.
   - If uncertain about a file, mark it ⚠️ and move on. Do NOT read every file.
+  - In your response, report which reference file you read (or "none" if no match).
 
 prompt: |
   Repo:              $repo
@@ -173,12 +190,13 @@ prompt: |
 response:
   json_schema:
     type: object
-    required: [plan_written, step_count]
+    required: [plan_written, step_count, reference_used]
     properties:
       plan_written: { type: boolean }
       step_count:   { type: integer }
       complex_count: { type: integer }
-      summary:      { type: string }
+      reference_used: { type: string, description: "Name of reference file read, or 'none'" }
+      summary: { type: string }
 RECIPE_EOF
 }
 
@@ -273,75 +291,114 @@ _pregather_context() {
   cat "$RUN_DIR/detect.json"
   echo ""
 
-  echo "=== FILE TREE (source + config only) ==="
-  find "$repo" -type f \
-    \( -name "*.java" -o -name "*.py" -o -name "*.xml" -o -name "*.yaml" \
-       -o -name "*.yml" -o -name "*.properties" -o -name "*.sql" \
-       -o -name "*.json" -o -name "*.toml" -o -name "*.gradle" \
-       -o -name "*.kt" -o -name "*.groovy" -o -name "Dockerfile" \
-       -o -name "*.cs" -o -name "*.csproj" -o -name "*.sln" -o -name "*.config" \
-       -o -name "*.go" -o -name "*.mod" -o -name "*.sum" \
-       -o -name "*.rb" -o -name "*.gemspec" -o -name "Gemfile" \
-       -o -name "*.rs" -o -name "Cargo.toml" -o -name "Cargo.lock" \
-       -o -name "*.swift" -o -name "*.php" -o -name "*.sh" \
-       -o -name "*.cfg" -o -name "*.ini" -o -name "Makefile" \) \
-    -not -path "*/target/*" -not -path "*/node_modules/*" \
-    -not -path "*/.git/*" -not -path "*/.vscode/*" \
-    -not -path "*/bower_components/*" -not -path "*/.metadata/*" \
-    -not -path "*/bin/*" -not -path "*/obj/*" -not -path "*/vendor/*" \
-    | sed "s|^$repo/||" | sort
-  echo ""
-
-  # Code graph — the key to zero file reads during planning
-  if [[ -f "$RUN_DIR/code-graph.json" ]]; then
-    echo "=== CODE GRAPH SUMMARY ==="
-    jq '.summary' "$RUN_DIR/code-graph.json"
+  # ── CODE GRAPH (replaces file tree + pattern scanning) ──
+  if [[ -f "$RUN_DIR/graph.json" ]]; then
+    echo "=== CODE GRAPH OVERVIEW ==="
+    jq -c '{
+      nodes: (.nodes | length),
+      edges: (.links | length),
+      communities: ([.communities[].id] | unique | length),
+      file_types: ([.nodes[].source_file | select(. != null) | split(".") | .[-1] | select(. != null and . != "")] | group_by(.) | map({key: .[0], value: length}) | from_entries)
+    }' "$RUN_DIR/graph.json"
     echo ""
 
-    echo "=== COMPLEX FILES (need structural changes) ==="
-    jq -r '.summary.complex_files[] | "\(.path) [\(.patterns | join(", "))] (\(.lines) lines)"' "$RUN_DIR/code-graph.json"
+    echo "=== ARCHITECTURAL LAYERS (communities from graph clustering) ==="
+    local communities
+    communities=$(jq '[.communities[].id] | unique | length' "$RUN_DIR/graph.json")
+    echo "Graphify detected $communities architectural clusters via community detection."
+    echo "These map to natural boundaries in your codebase (layers, modules, subsystems)."
     echo ""
-
-    echo "=== FILE DETAILS (imports, annotations, classes, methods, injections, dependencies) ==="
-    # Include full details for complex files, summary for others
+    echo "Top 10 communities by size:"
     jq -r '
-      .files[] |
-      if (.patterns // [] | length) > 0 then
-        "--- \(.path) [COMPLEX: \(.patterns | join(", "))] ---",
-        "  package: \(.package // .namespace // "")",
-        "  imports: \(.import_groups // {} | to_entries | map("\(.key): \(.value | join(", "))") | join("; "))",
-        "  annotations: \(.annotations // [] | join(", "))",
-        "  classes: \(.classes // [] | map("\(.name)\(if .extends then " extends \(.extends)" else "" end)\(if .implements then " implements \(.implements | join(", "))" else "" end)") | join("; "))",
-        "  methods: \(.methods // [] | map("\(.name)(\(.params // ""))") | join(", "))",
-        "  injections: \(.injections // [] | map("\(.type) \(.name)") | join(", "))",
-        "  depends_on: \(.depends_on // [] | join(", "))",
-        ""
-      else
-        "--- \(.path) ---",
-        "  \(.lines) lines | annotations: \(.annotations // [] | join(", ")) | depends_on: \(.depends_on // [] | join(", "))",
-        ""
-      end
-    ' "$RUN_DIR/code-graph.json"
+      [.communities[] | {id: .id, size: 1}] |
+      group_by(.id) |
+      map({community: .[0].id, size: length}) |
+      sort_by(.size) | reverse |
+      .[:10] |
+      .[] | "  - Community \(.community): \(.size) nodes"
+    ' "$RUN_DIR/graph.json"
+    echo ""
+    echo "Use communities to plan layer-by-layer migration:"
+    echo "  Phase 1: Identify which communities are build/config (low risk)"
+    echo "  Phase 2: Migrate data models (usually smaller communities)"
+    echo "  Phase 3: Migrate services (medium communities)"
+    echo "  Phase 4: Migrate API/controllers (often connects to many communities)"
     echo ""
 
-    echo "=== DEPENDENCY GRAPH (who depends on whom) ==="
-    jq -r '.files[] | select((.depends_on // []) | length > 0) | "\(.path) → \(.depends_on | join(", "))"' "$RUN_DIR/code-graph.json"
+    echo "=== GOD NODES (high-degree abstractions - handle with care) ==="
+    echo "These nodes have many connections - changes here ripple across the system."
+    jq -r '
+      .nodes |
+      sort_by(.degree) | reverse |
+      .[:10] |
+      .[] | "  - \(.label) (\(.degree) edges) → \(.source_file // "unknown")"
+    ' "$RUN_DIR/graph.json"
+    echo ""
+    echo "Mark god nodes as HIGH RISK in the migration plan."
+    echo ""
+
+    echo "=== CROSS-BOUNDARY EDGES (dependencies that cross community boundaries) ==="
+    echo "These are coordination points - migrating one side affects the other."
+    jq -r '
+      .links[] |
+      select(
+        (.source as $s | .target as $t |
+         (.communities | map(select(.id == ($s | split("_")[0])) | .id) | .[0]) !=
+         (.communities | map(select(.id == ($t | split("_")[0])) | .id) | .[0])
+        )
+      ) |
+      "  - \(.source) → \(.target) via \(.relation)"
+    ' "$RUN_DIR/graph.json" 2>/dev/null | head -15 || echo "  (cross-boundary analysis requires community metadata)"
+    echo ""
+
+    echo "=== FILE TREE (from graph - source + config only) ==="
+    jq -r '.nodes[].source_file | select(. != null)' "$RUN_DIR/graph.json" | sort | uniq
+    echo ""
+
+    echo "=== GRAPH QUERY CAPABILITY ==="
+    echo "The full graph is available at: $RUN_DIR/graph.json"
+    echo ""
+    echo "You can use graphify queries during planning (if needed):"
+    echo "  graphify query \"Which classes are annotated with @MessageDriven?\""
+    echo "  graphify path <source_node> <target_node>  # trace dependency path"
+    echo ""
+    echo "However, prefer reading specific files via developer tools to save tokens."
+    echo "Only query the graph for broad architectural questions."
+    echo ""
+  else
+    echo "=== FILE TREE (source + config only) ==="
+    find "$repo" -type f \
+      \( -name "*.java" -o -name "*.py" -o -name "*.xml" -o -name "*.yaml" \
+         -o -name "*.yml" -o -name "*.properties" -o -name "*.sql" \
+         -o -name "*.json" -o -name "*.toml" -o -name "*.gradle" \
+         -o -name "*.kt" -o -name "*.groovy" -o -name "Dockerfile" \
+         -o -name "*.cs" -o -name "*.csproj" -o -name "*.sln" -o -name "*.config" \
+         -o -name "*.go" -o -name "*.mod" -o -name "*.sum" \
+         -o -name "*.rb" -o -name "*.gemspec" -o -name "Gemfile" \
+         -o -name "*.rs" -o -name "Cargo.toml" -o -name "Cargo.lock" \
+         -o -name "*.swift" -o -name "*.php" -o -name "*.sh" \
+         -o -name "*.cfg" -o -name "*.ini" -o -name "Makefile" \) \
+      -not -path "*/target/*" -not -path "*/node_modules/*" \
+      -not -path "*/.git/*" -not -path "*/.vscode/*" \
+      -not -path "*/bower_components/*" -not -path "*/.metadata/*" \
+      -not -path "*/bin/*" -not -path "*/obj/*" -not -path "*/vendor/*" \
+      | sed "s|^$repo/||" | sort
+    echo ""
+    echo "(Graph not available - fallback to file listing)"
     echo ""
   fi
 
-  # Build manifests and config files — NOT pre-read.
-  # Goose reads what it needs via developer tools based on the file tree above.
-
-  # List available references — goose reads what it needs via developer tools
+  # List available migration references — goose decides which to read
   if [[ -d "$skill_dir/references" ]]; then
-    echo "=== AVAILABLE REFERENCES ==="
+    echo "=== AVAILABLE MIGRATION REFERENCES ==="
     echo "Directory: $skill_dir/references/"
     for ref in "$skill_dir/references/"*.md; do
       [[ -f "$ref" ]] || continue
       echo "  - $(basename "$ref")"
     done
     echo ""
-    echo "Use developer tools to read the reference(s) relevant to the migration request."
+    echo "Read the reference that matches the detected migration type."
+    echo "Use developer tools: cat $skill_dir/references/<filename>"
     echo ""
   fi
 }

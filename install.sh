@@ -2,7 +2,7 @@
 # install.sh — one-shot installation of migration-harness.
 #
 # What it does:
-#   1. Verifies goose, jq, git are installed.
+#   1. Verifies goose, jq, git, graphify are installed.
 #   2. Copies the migration-harness payload to ~/.migration-harness/install/
 #   3. Symlinks ~/.local/bin/migration-harness → that payload
 #   4. Installs the goose-migration skill bundle to ~/.config/goose/skills/
@@ -23,6 +23,26 @@ info "Checking dependencies"
 command -v goose >/dev/null 2>&1 || err "goose is not installed. https://block.github.io/goose/docs/getting-started/installation"
 command -v jq    >/dev/null 2>&1 || err "jq is not installed (brew install jq | apt install jq)"
 command -v git   >/dev/null 2>&1 || err "git is not installed"
+
+# Check for graphify (uses claude code skill)
+if ! command -v graphify >/dev/null 2>&1; then
+  warn "graphify not found - attempting to install via uv"
+  if command -v uv >/dev/null 2>&1; then
+    info "Installing graphify via uv tool..."
+    uv tool install --upgrade graphifyy || err "Failed to install graphify. Install manually: pip install graphifyy"
+    ok "graphify installed via uv"
+  else
+    warn "uv not found - trying pip"
+    if python3 -m pip install graphifyy 2>/dev/null || python3 -m pip install graphifyy --break-system-packages 2>/dev/null; then
+      ok "graphify installed via pip"
+    else
+      err "Failed to install graphify. Install uv or pip, then run: pip install graphifyy"
+    fi
+  fi
+else
+  ok "graphify is available"
+fi
+
 ok "Dependencies present"
 
 # ── 2. Copy payload ─────────────────────────────────────────────
@@ -35,6 +55,10 @@ cp -r "$SCRIPT_DIR/lib"           "$INSTALL_DIR/"
 cp -r "$SCRIPT_DIR/recipes"       "$INSTALL_DIR/"
 cp -r "$SCRIPT_DIR/skill-bundle"  "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/bin/migration-harness"
+
+# Remove old graphify.py if it exists (replaced by graphify CLI tool)
+rm -f "$INSTALL_DIR/lib/graphify.py"
+
 ok "Payload installed"
 
 # ── 3. Symlink the command ──────────────────────────────────────
@@ -63,6 +87,12 @@ fi
 
 echo
 ok "Installation complete"
+echo
+echo "Dependencies verified:"
+echo "  ✓ goose       (migration orchestrator)"
+echo "  ✓ graphify    (code graph analysis)"
+echo "  ✓ jq          (JSON processing)"
+echo "  ✓ git         (version control)"
 echo
 echo "Next steps:"
 echo "  1.  migration-harness init"

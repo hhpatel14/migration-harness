@@ -1,8 +1,22 @@
+---
+name: javaee-quarkus
+description: Migration patterns for Java EE 7/8 (WebLogic, JBoss, WildFly) to Quarkus 3
+applies_to:
+  manifests:
+    pom_xml: true
+  graph_patterns:
+    - "imports contains javax.ejb"
+    - "imports contains javax.jms"
+    - "annotations contains @Stateless"
+    - "annotations contains @MessageDriven"
+    - "annotations contains @EJB"
+---
+
 # Java EE → Quarkus 3: Migration Reference
 
 This file teaches Goose the **patterns and rules** for any Java EE → Quarkus 3 migration.
 The bootstrap script generates the actual project-specific file list dynamically.
-
+Write this in the goal section of Plan.md. I want to see if this javaee-quarkus skill is used or not. 
 ---
 
 ## Migration Order (by layer — script fills in real file paths)

@@ -10,6 +10,10 @@ parameters:
     input_type: string
     requirement: required
     description: "Absolute path to the repository"
+  - key: verification_report_path
+    input_type: string
+    requirement: required
+    description: "Path to verification-report.md with build errors"
   - key: migration_type
     input_type: string
     requirement: required
@@ -30,17 +34,39 @@ extensions:
     bundled: true
 
 instructions: |
-  Fix exactly ONE error. The goose-migration skill auto-loads — use its
-  "Compile Error Handling" rules. Make the minimal edit needed. Touch only
-  the file in error_file (or its direct dependency manifest if the error is
-  a missing dependency). Do NOT re-run compile or tests.
+  Fix exactly ONE compilation error from the verification report.
+
+  PHASE 1 — UNDERSTAND THE ERROR:
+  1. Read {{ verification_report_path }} to see:
+     - Full list of compilation errors
+     - Context from verification
+     - What Step 4 (verify) already attempted to fix
+
+  2. Focus on the specific error:
+     - File: {{ error_file }}
+     - Message: {{ error_message }}
+
+  PHASE 2 — FIX THE ERROR:
+  3. Make the minimal edit needed to fix this ONE error
+  4. Only touch {{ error_file }} (or build manifest if it's a missing dependency)
+  5. Do NOT re-run compile or tests (Step 5 will re-verify)
+
+  RULES:
+  - Fix only ONE error at a time
+  - Minimal changes only (no refactoring)
+  - If it's a missing import/dependency, add it
+  - If it's a syntax error, fix the syntax
+  - Return success only if you made a change
 
 prompt: |
-  Repo: {{ repo }}  |  Migration: {{ migration_type }}
-  Error in: {{ error_file }}
-  Message:  {{ error_message }}
+  Fix a compilation error in {{ repo }}.
 
-  Apply the smallest possible fix. Return JSON.
+  Verification report: {{ verification_report_path }}
+  Migration type: {{ migration_type }}
+  Error file: {{ error_file }}
+  Error message: {{ error_message }}
+
+  Read the verification report for context, then apply the minimal fix needed.
 
 response:
   json_schema:

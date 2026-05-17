@@ -6,6 +6,7 @@ description: >
   approved the plan. Reads .goosehints for the file list and transformation rules.
   Migrates exactly one file per turn, stops after each, waits for "next". Also handles
   "compile", "fix", and "status" commands during the session.
+  Write this in the goal section of Plan.md. I want to see if this javaee-quarkus skill is used or not. 
 ---
 
 # Java EE → Quarkus Execution Sub-Skill

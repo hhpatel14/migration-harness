@@ -151,7 +151,11 @@ cmd_run() {
   header "Step 3/5 — Execute"
   step_execute "$repo"
 
-  header "Steps 4–5 — Verify + Fix-loop"
+  header "Step 4/5 — Verify"
+  local verify_status=0
+  step_verify "$repo" "$RUN_DIR/verify.json" || verify_status=$?
+
+  header "Step 5/5 — Fix-loop (conditional)"
   if step_fix_loop "$repo"; then
     ok "Migration complete. Build clean."
   else
@@ -203,7 +207,9 @@ cmd_resume() {
   # Skip detect + plan; execute will skip already-done items naturally
   header "Step 3/5 — Execute (resume)"
   step_execute "$repo"
-  header "Steps 4–5 — Verify + Fix-loop"
+  header "Step 4/5 — Verify"
+  step_verify "$repo" "$RUN_DIR/verify.json" || true
+  header "Step 5/5 — Fix-loop (conditional)"
   step_fix_loop "$repo" || warn "Finished with errors"
 }
 

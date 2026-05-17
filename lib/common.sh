@@ -233,6 +233,166 @@ PYEOF
   done
 }
 
+# ── Interactive goose with session resumption ────────────────────
+# Usage: goose_run_interactive <recipe> [--max-turns N] [extra goose args...]
+# Like goose_run but supports resuming with more turns if incomplete.
+# Max total turns: 140, asks user for turn increments.
+goose_run_interactive() {
+  [[ -n "${RUN_DIR:-}" ]] || fatal "goose_run_interactive: RUN_DIR not set"
+
+  local recipe="$1"; shift
+  local name
+  name=$(basename "$recipe" .yaml)
+  local session_name="${name}-$(date +%s)-$$"
+  local log="$RUN_DIR/logs/${session_name}.json"
+  mkdir -p "$RUN_DIR/logs"
+
+  # Allow per-call max-turns override for initial run
+  local initial_turns=50
+  if [[ "${1:-}" == "--max-turns" ]]; then
+    initial_turns="$2"; shift 2
+  fi
+
+  local max_total_turns=140
+  local current_turns=0
+  local session_started=false
+
+  # Store extra args for all goose calls
+  local -a extra_args=("$@")
+
+  while true; do
+    local turns_to_add=$initial_turns
+    if $session_started; then
+      # Resuming - ask user for turn increment
+      echo
+      read -rp "How many more turns to add? [default: 30, max: $((max_total_turns - current_turns))]: " user_turns
+      turns_to_add=${user_turns:-30}
+
+      # Validate input
+      if ! [[ "$turns_to_add" =~ ^[0-9]+$ ]]; then
+        err "Invalid input. Please enter a number."
+        break
+      fi
+
+      # Cap at remaining budget
+      local remaining=$((max_total_turns - current_turns))
+      if (( turns_to_add > remaining )); then
+        turns_to_add=$remaining
+        warn "Capped to $turns_to_add turns (total limit: $max_total_turns)"
+      fi
+    fi
+
+    current_turns=$((current_turns + turns_to_add))
+    info "       running goose session '$session_name' (turns: $current_turns / $max_total_turns)..."
+
+    # Run or resume goose session
+    if ! $session_started; then
+      # First run - create session
+      goose run \
+        --recipe "$recipe" \
+        --name "$session_name" \
+        --quiet \
+        --output-format json \
+        --max-turns "$turns_to_add" \
+        --provider "$MH_PROVIDER" \
+        --model "$MH_MODEL" \
+        "${extra_args[@]}" \
+      > "$log" 2>/dev/null &
+      session_started=true
+    else
+      # Resume existing session with more turns
+      goose run \
+        --name "$session_name" \
+        --resume \
+        --max-turns "$turns_to_add" \
+        --output-format json \
+        --quiet \
+        --provider "$MH_PROVIDER" \
+        --model "$MH_MODEL" \
+      >> "$log" 2>/dev/null &
+    fi
+
+    local goose_pid=$!
+
+    # Live progress watcher
+    _tail_goose_progress "$log" "$goose_pid" &
+    local tail_pid=$!
+
+    # Wait for goose
+    wait "$goose_pid" 2>/dev/null || true
+    local goose_exit=$?
+
+    # Stop watcher
+    kill "$tail_pid" 2>/dev/null || true
+    wait "$tail_pid" 2>/dev/null || true
+
+    if (( goose_exit != 0 )); then
+      warn "       goose exited with code $goose_exit"
+    fi
+
+    # Check if we got final output
+    if [[ ! -s "$log" ]]; then
+      err "       goose produced no log output"
+      break
+    fi
+
+    local clean_log="$log.clean"
+    sed -n '/^{/,$p' "$log" > "$clean_log" 2>/dev/null || cp "$log" "$clean_log"
+
+    # Check for API errors
+    if grep -q "credit balance is too low\|rate limit\|quota exceeded" "$clean_log" 2>/dev/null; then
+      err "       API error — check your provider billing/quota"
+      rm -f "$clean_log"
+      break
+    fi
+
+    # Try to extract final output
+    local output
+    output=$(jq -c '
+      [ .messages[]?.content[]?
+        | select(.type == "toolRequest"
+                 and .toolCall.value.name == "recipe__final_output")
+        | .toolCall.value.arguments
+      ] | last // empty
+    ' "$clean_log" 2>/dev/null || true)
+
+    rm -f "$clean_log"
+
+    # Check if we got complete output
+    if [[ -n "$output" && "$output" != "null" ]]; then
+      ok "       session completed successfully"
+      echo "$output"
+      # Cleanup session
+      goose session remove --name "$session_name" >/dev/null 2>&1 || true
+      return 0
+    fi
+
+    # No output yet - check if we hit turn limit
+    if (( current_turns >= max_total_turns )); then
+      warn "       reached maximum turns ($max_total_turns) without completing"
+      warn "       session incomplete - manual inspection needed"
+      # Cleanup session
+      goose session remove --name "$session_name" >/dev/null 2>&1 || true
+      return 1
+    fi
+
+    # Ask user if they want to continue
+    echo
+    warn "       session incomplete (used $current_turns turns so far)"
+    read -rp "Continue with more turns? [Y/n]: " continue_choice
+    if [[ "$continue_choice" =~ ^[Nn] ]]; then
+      info "       stopping at user request"
+      # Cleanup session
+      goose session remove --name "$session_name" >/dev/null 2>&1 || true
+      return 1
+    fi
+  done
+
+  # Cleanup on any error path
+  goose session delete "$session_name" >/dev/null 2>&1 || true
+  return 1
+}
+
 # ── Run-id helpers ───────────────────────────────────────────────
 new_run_dir() {
   local repo_name="$1"
