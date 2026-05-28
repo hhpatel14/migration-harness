@@ -95,5 +95,8 @@ echo "  ✓ jq          (JSON processing)"
 echo "  ✓ git         (version control)"
 echo
 echo "Next steps:"
-echo "  1.  migration-harness init"
-echo "  2.  migration-harness /path/to/your/app \"Migrate this Java EE app to Quarkus\""
+echo "  1.  migration-harness init                              # Configure which model to use"
+echo "  2.  migration-harness /path/to/your/app \"Migrate X to Y\""
+echo
+echo "Note: migration-harness config is separate from goose config."
+echo "      You can use a different (e.g., more powerful) model for migrations."
