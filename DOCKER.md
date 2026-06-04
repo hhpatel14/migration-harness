@@ -117,6 +117,63 @@ docker run --rm -it \
 
 ---
 
+## Running Individual Steps
+
+You can run migration steps individually for more control. This is useful for:
+- Debugging specific steps
+- Re-running a step after manual fixes
+- Inspecting intermediate outputs
+
+**Inside the container:**
+
+```bash
+# Step 1: Detect (analyzes code structure, builds graph)
+migration-harness step detect /workspace/coolstore "Migrate from Java EE to Quarkus"
+
+# Step 2: Plan (generates migration plan with human approval)
+migration-harness step plan /workspace/coolstore "Migrate from Java EE to Quarkus"
+
+# Step 3: Execute (transforms code according to plan)
+migration-harness step execute /workspace/coolstore "Migrate from Java EE to Quarkus"
+
+# Step 4: Verify (builds and tests)
+migration-harness step verify /workspace/coolstore
+
+# Step 5: Fix (auto-fixes compilation errors)
+migration-harness step fix /workspace/coolstore "Migrate from Java EE to Quarkus"
+```
+
+**Check status and resume:**
+
+```bash
+# Show summary of last run
+migration-harness status
+
+# Resume incomplete run
+migration-harness resume
+```
+
+**Important Notes:**
+
+1. **Run directory**: Steps use the latest run directory at `/root/.migration-harness/runs/`. The detect step creates a new run directory, subsequent steps reuse it.
+
+2. **Step dependencies**: 
+   - `detect` → creates graph and manifest
+   - `plan` → needs graph from detect
+   - `execute` → needs plan from plan step
+   - `verify` → needs executed code
+   - `fix` → needs verification errors
+
+3. **Intermediate outputs**: Each step writes to the run directory:
+   - `detect.json` - project structure analysis
+   - `graph.json` - code graph
+   - `PLAN.md` - migration plan
+   - `execution-log.md` - execution log with lessons
+   - `verification-report.md` - build/test results
+   - `metrics.json` - final metrics
+
+---
+
 ## Debugging
 
 ### Interactive Shell in Container
