@@ -484,16 +484,26 @@ Meta-skill (orchestrate.md):
 
 ---
 
-### Step 8: Controller Reads Stage Status, Tears Down Sandbox A
+### Step 8: Controller Reads Stage Status, Records It, Tears Down Sandbox A
 
 ```
 Controller:
-  1. Reads stage-status.json from workspace PVC
-  2. Stage 1: analysis → complete ✓
-  3. Tears down Sandbox A (Pod deleted)
-  4. Moves to Stage 2: execution
-  5. Reads agentRef: execution-worker
+  1. Watches Pod status → Pod "Succeeded"
+  2. Reads stage-status.json from workspace PVC
+  3. Records result in AgentPlanExecution CR:
+       status.stages[0]:
+         name: analysis
+         status: complete
+         phases: [{detect: success}, {plan: success}]
+  4. Tears down Sandbox A (Pod deleted)
+  5. Writes NEW phases.json to PVC for next stage
+  6. Moves to Stage 2: execution
+  7. Reads agentRef: execution-worker
 ```
+
+The stage result now lives in the **AgentPlanExecution CR** (Kubernetes-native),
+not on the PVC. `stage-status.json` on PVC is transient — it gets overwritten
+by the next stage and that's fine.
 
 ---
 
@@ -570,16 +580,23 @@ Meta-skill (orchestrate.md):
 
 ---
 
-### Step 12: Controller Moves to Stage 3
+### Step 12: Controller Records Stage 2, Moves to Stage 3
 
 ```
 Controller:
-  1. Reads stage-status.json → execution complete ✓
-  2. Tears down Sandbox B
-  3. Moves to Stage 3: verification
-  4. Reads agentRef: verification-worker
-  5. Looks up Agent CR → gemini-2.5-pro (powerful, for debugging)
-  6. Looks up LLMProvider → gcp-vertex
+  1. Watches Pod status → Pod "Succeeded"
+  2. Reads stage-status.json from PVC
+  3. Records result in AgentPlanExecution CR:
+       status.stages[1]:
+         name: execution
+         status: complete
+         phases: [{execute: success}]
+  4. Tears down Sandbox B
+  5. Writes NEW phases.json to PVC for Stage 3
+  6. Moves to Stage 3: verification
+  7. Reads agentRef: verification-worker
+  8. Looks up Agent CR → gemini-2.5-pro (powerful, for debugging)
+  9. Looks up LLMProvider → gcp-vertex
 ```
 
 ---
@@ -665,15 +682,30 @@ Meta-skill (orchestrate.md):
 
 ---
 
-### Step 15: Controller Marks AgentPlan Execution Complete
+### Step 15: Controller Records Stage 3, Marks Execution Complete
 
 ```
 Controller:
-  1. Reads stage-status.json → verification complete ✓
-  2. Tears down Sandbox C
-  3. All 3 stages complete
-  4. Updates AgentPlan execution status: COMPLETE
-  5. Developer gets notification: "Migration finished"
+  1. Watches Pod status → Pod "Succeeded"
+  2. Reads stage-status.json from PVC
+  3. Records result in AgentPlanExecution CR:
+       status.stages[2]:
+         name: verification
+         status: complete
+         phases: [{verify: success, errors_found: 23},
+                  {fix: success, errors_remaining: 0, fix_iterations: 3}]
+  4. Tears down Sandbox C
+  5. All 3 stages recorded in CR as complete
+  6. Updates AgentPlanExecution CR status: COMPLETE
+  7. Developer gets notification: "Migration finished"
+
+AgentPlanExecution CR (final state — the permanent record):
+  status:
+    overall: complete
+    stages:
+      - name: analysis,      status: complete, phases: [detect ✓, plan ✓]
+      - name: execution,     status: complete, phases: [execute ✓]
+      - name: verification,  status: complete, phases: [verify ✓, fix ✓]
 
 Results on workspace PVC:
   /workspace/coolstore/
@@ -691,28 +723,55 @@ Results on workspace PVC:
 ### Summary: What Touched What
 
 ```
-Step   Component        CRDs Read                    Action
-────   ─────────        ─────────                    ──────
-1      Developer        —                            Triggers AgentPlan
-2      Controller       AgentPlan                    Reads stages
-3      Controller       Agent (planning-worker)      Reads blueprint
-4      Controller       LLMProvider (gcp-vertex)     Gets endpoint + creds
-5      Controller       SkillCards (via Agent)        Creates Sandbox A
-6      Controller       —                            Runs goose + meta-skill
-7      Meta-skill       —                            Drives Phase 1 (detect)
-7      Meta-skill       —                            Drives Phase 2 (plan)
-8      Controller       —                            Reads status, kills Sandbox A
-9      Controller       Agent (execution-worker)     Reads blueprint
-10     Controller       LLMProvider (litmaas)        Gets endpoint + creds
-10     Controller       SkillCards (via Agent)        Creates Sandbox B
-11     Meta-skill       —                            Drives Phase 3 (execute)
-12     Controller       —                            Reads status, kills Sandbox B
-12     Controller       Agent (verification-worker)  Reads blueprint
-13     Controller       LLMProvider (gcp-vertex)     Gets endpoint + creds
-13     Controller       SkillCards (via Agent)        Creates Sandbox C
-14     Meta-skill       —                            Drives Phase 4 (verify)
-14     Meta-skill       —                            Drives Phase 5 (fix)
-15     Controller       —                            Reads status, marks COMPLETE
+Step   Component        CRDs Read/Written            Action                          PVC Files
+────   ─────────        ────────────────             ──────                          ─────────
+1      Developer        AgentPlanExecution (create)   Triggers AgentPlan              —
+2      Controller       AgentPlan (read)              Reads stages                    —
+3      Controller       Agent: planning-worker (read) Reads blueprint                 —
+4      Controller       LLMProvider: gcp-vertex (read)Gets endpoint + creds           —
+5      Controller       SkillCards (read)             Creates Sandbox A               writes phases.json
+6      Controller       —                            Runs goose + meta-skill         —
+7      Meta-skill       —                            Drives Phase 1 (detect)         writes detect.json, graph.json
+7      Meta-skill       —                            Drives Phase 2 (plan)           writes PLAN.md
+7      Meta-skill       —                            Phases done                     writes stage-status.json
+8      Controller       AgentPlanExecution (update)   Reads status → records in CR    reads stage-status.json
+8      Controller       —                            Kills Sandbox A                 overwrites phases.json
+9      Controller       Agent: execution-worker (read)Reads blueprint                 —
+10     Controller       LLMProvider: litmaas (read)   Gets endpoint + creds           —
+10     Controller       SkillCards (read)             Creates Sandbox B               writes phases.json
+11     Meta-skill       —                            Drives Phase 3 (execute)        writes execution-log.md
+11     Meta-skill       —                            Phases done                     writes stage-status.json
+12     Controller       AgentPlanExecution (update)   Reads status → records in CR    reads stage-status.json
+12     Controller       —                            Kills Sandbox B                 overwrites phases.json
+12     Controller       Agent: verify-worker (read)   Reads blueprint                 —
+13     Controller       LLMProvider: gcp-vertex (read)Gets endpoint + creds           —
+13     Controller       SkillCards (read)             Creates Sandbox C               writes phases.json
+14     Meta-skill       —                            Drives Phase 4 (verify)         writes verification-report.md
+14     Meta-skill       —                            Drives Phase 5 (fix)            writes metrics.json
+14     Meta-skill       —                            Phases done                     writes stage-status.json
+15     Controller       AgentPlanExecution (update)   Reads status → records in CR    reads stage-status.json
+15     Controller       AgentPlanExecution (update)   Marks COMPLETE                  —
+15     Controller       —                            Kills Sandbox C                 —
+```
+
+### Communication Pattern
+
+```
+PVC is a transient message channel, CR is the permanent record:
+
+  Meta-skill ──writes──► stage-status.json (PVC)
+                              │
+  Controller ──reads───►──────┘
+                              │
+  Controller ──records──► AgentPlanExecution CR (permanent)
+                              │
+  Controller ──overwrites──► phases.json (PVC) for next stage
+                              │
+  Next Sandbox ──reads──►─────┘
+
+  stage-status.json gets overwritten each stage — that's fine
+  phases.json gets overwritten each stage — that's expected
+  The CR holds the full history of all stages
 ```
 
 ---
